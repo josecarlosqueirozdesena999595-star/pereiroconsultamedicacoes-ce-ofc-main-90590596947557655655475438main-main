@@ -1,6 +1,7 @@
 import { UBS, User } from '@/types';
 import { supabase } from '@/integrations/supabase/client';
 import { formatDateTime } from '@/lib/utils';
+import { isWithinInterval, setHours, setMinutes, format } from 'date-fns'; // Adicionando imports de date-fns
 
 const STORAGE_KEYS = {
   AUTH: 'pereiro_auth'
@@ -532,12 +533,28 @@ export const getUpdateChecks = async (userId: string, ubsId: string): Promise<{ 
   }
 };
 
-export const saveUpdateCheck = async (userId: string, ubsId: string, period: 'manha' | 'tarde'): Promise<boolean> => {
+export const saveUpdateCheck = async (userId: string, ubsId: string): Promise<boolean> => {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const today = format(now, 'yyyy-MM-dd'); // Obtém a data de hoje no formato 'YYYY-MM-DD'
     
-    // Verificar se já existe um registro para hoje
-    const { data: existing } = await supabase
+    // Define as janelas de tempo para os checks de manhã e tarde
+    const morningStart = setMinutes(setHours(now, 7), 0);   // 07:00
+    const morningEnd = setMinutes(setHours(now, 11), 59);  // 11:59
+
+    const afternoonStart = setMinutes(setHours(now, 13), 0); // 13:00
+    const afternoonEnd = setMinutes(setHours(now, 17), 0);   // 17:00
+
+    const isMorningPeriod = isWithinInterval(now, { start: morningStart, end: morningEnd });
+    const isAfternoonPeriod = isWithinInterval(now, { start: afternoonStart, end: afternoonEnd });
+
+    if (!isMorningPeriod && !isAfternoonPeriod) {
+      console.log('Upload fora do período de check (manhã ou tarde).');
+      return false; // Não marca se estiver fora dos períodos definidos
+    }
+
+    // Busca o registro de check existente para hoje
+    const { data: existing, error: fetchError } = await supabase
       .from('update_checks')
       .select('*')
       .eq('user_id', userId)
@@ -545,37 +562,52 @@ export const saveUpdateCheck = async (userId: string, ubsId: string, period: 'ma
       .eq('data', today)
       .maybeSingle();
 
+    if (fetchError) throw fetchError;
+
+    let updateData: Partial<{ manha: boolean; tarde: boolean }> = {};
+    let shouldUpdate = false;
+
     if (existing) {
-      // Se já está marcado, não permite alterar
-      if (existing[period]) {
+      // Atualiza o registro existente
+      if (isMorningPeriod && !existing.manha) {
+        updateData.manha = true;
+        shouldUpdate = true;
+      }
+      if (isAfternoonPeriod && !existing.tarde) {
+        updateData.tarde = true;
+        shouldUpdate = true;
+      }
+
+      if (shouldUpdate) {
+        const { error: updateError } = await supabase
+          .from('update_checks')
+          .update(updateData)
+          .eq('id', existing.id);
+        if (updateError) throw updateError;
+        return true;
+      } else {
+        // Se nenhuma atualização é necessária (ex: já marcado para este período), retorna false
         return false;
       }
-      
-      // Atualizar o período específico
-      const { error } = await supabase
-        .from('update_checks')
-        .update({ [period]: true })
-        .eq('id', existing.id);
-
-      if (error) throw error;
     } else {
-      // Criar novo registro
-      const { error } = await supabase
-        .from('update_checks')
-        .insert({
-          user_id: userId,
-          ubs_id: ubsId,
-          data: today,
-          manha: period === 'manha',
-          tarde: period === 'tarde'
-        });
-
-      if (error) throw error;
+      // Cria um novo registro
+      if (isMorningPeriod || isAfternoonPeriod) {
+        const { error: insertError } = await supabase
+          .from('update_checks')
+          .insert({
+            user_id: userId,
+            ubs_id: ubsId,
+            data: today,
+            manha: isMorningPeriod,
+            tarde: isAfternoonPeriod
+          });
+        if (insertError) throw insertError;
+        return true;
+      }
     }
-
-    return true;
+    return false; // Fallback, caso nenhuma condição seja atendida
   } catch (error) {
-    console.error('Erro ao salvar check:', error);
+    console.error('Erro ao salvar check de atualização:', error);
     return false;
   }
 };

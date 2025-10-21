@@ -122,7 +122,7 @@ const UserDashboard = () => {
 
     setUploadingUBS(ubsId);
     let uploadSuccess = false;
-    let periodMarked: 'manha' | 'tarde' | null = null;
+    let checkMarked = false; // Flag para indicar se um check foi marcado
 
     try {
       // 1. Salva o PDF e atualiza a data de upload no banco
@@ -130,27 +130,8 @@ const UserDashboard = () => {
       uploadSuccess = !!newTimestamp;
 
       if (uploadSuccess) {
-        // 2. Recarrega os checks atuais para decidir qual período marcar
-        const currentChecks = await getUpdateChecks(user.id, ubsId);
-        const manhaChecked = currentChecks?.manha || false;
-        const tardeChecked = currentChecks?.tarde || false;
-        
-        let periodToMark: 'manha' | 'tarde' | null = null;
-
-        if (!manhaChecked) {
-          periodToMark = 'manha';
-        } else if (manhaChecked && !tardeChecked) {
-          periodToMark = 'tarde';
-        }
-
-        if (periodToMark) {
-          // 3. Marca o check correspondente no banco de dados
-          const success = await saveUpdateCheck(user.id, ubsId, periodToMark);
-          
-          if (success) {
-            periodMarked = periodToMark;
-          }
-        }
+        // 2. Tenta marcar o check diário (a função agora decide o período com base na hora)
+        checkMarked = await saveUpdateCheck(user.id, ubsId);
       }
       
     } catch (error) {
@@ -166,17 +147,25 @@ const UserDashboard = () => {
       setUploadingUBS(null);
       
       // 4. Recarrega todos os dados para refletir as mudanças na UI
-      await loadUserUBS();
+      // Primeiro, salva o estado atual dos checks para comparação
+      const previousChecks = updateChecks[ubsId];
+      await loadUserUBS(); // Isso irá atualizar `updateChecks` com os novos valores
 
       // 5. Exibe a mensagem de sucesso após recarregar
       if (uploadSuccess) {
         let description = "O arquivo foi atualizado com sucesso.";
-        if (periodMarked) {
-          description = `O arquivo de medicações foi atualizado e a marcação de ${periodMarked === 'manha' ? 'Manhã' : 'Tarde'} foi registrada.`;
-        } else if (isComplete(ubsId)) {
-          description = "O arquivo foi atualizado, mas os checks de Manhã e Tarde já estavam completos.";
+        if (checkMarked) {
+          // Compara o estado anterior com o novo para determinar qual período foi marcado
+          const currentChecks = updateChecks[ubsId];
+          if (currentChecks?.manha && (!previousChecks || !previousChecks.manha)) {
+            description = "O arquivo de medicações foi atualizado e a marcação de Manhã foi registrada.";
+          } else if (currentChecks?.tarde && (!previousChecks || !previousChecks.tarde)) {
+            description = "O arquivo de medicações foi atualizado e a marcação de Tarde foi registrada.";
+          } else {
+            description = "O arquivo foi atualizado, mas os checks de Manhã e Tarde já estavam completos ou o período não se encaixa.";
+          }
         } else {
-          description = "O arquivo foi atualizado, mas não foi possível registrar o check diário. Verifique o status.";
+          description = "O arquivo foi atualizado, mas não foi possível registrar o check diário (fora do horário ou já marcado).";
         }
         
         toast({
